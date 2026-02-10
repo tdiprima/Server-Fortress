@@ -64,4 +64,17 @@ sudo sshd -T | egrep 'port|permitrootlogin|passwordauthentication|allowusers'
 - ✅ Ubuntu / Debian
 - ✅ RHEL / Rocky / Alma (and similar)
 
+## ⚠️ Disclaimer
+
+This script makes system-level security changes including SSH configuration, firewall rules, user accounts, and update settings. While it includes safeguards (backups, validation checks, and interactive prompts), **you are responsible for reviewing changes before applying them to any system**.
+
+Use at your own risk. The author is not liable for:
+
+* Loss of access to a server
+* Service disruption or downtime
+* Misconfiguration in custom or non-standard environments
+* Etc.
+
+Always test on a non-production system first and verify SSH access in a new session before closing your current one.
+
 <br>
