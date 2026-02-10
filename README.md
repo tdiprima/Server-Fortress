@@ -64,8 +64,4 @@ sudo sshd -T | egrep 'port|permitrootlogin|passwordauthentication|allowusers'
 - ✅ Ubuntu / Debian
 - ✅ RHEL / Rocky / Alma (and similar)
 
----
-
-Stay safe, little Linux bear.
-
 <br>
