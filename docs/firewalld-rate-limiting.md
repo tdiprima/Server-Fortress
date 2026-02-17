@@ -28,6 +28,6 @@ You should see your rule echoed back in the last command. To test it's working:
 sudo journalctl -f -u firewalld
 ```
 
-A few things worth knowing about this approach compared to fail2ban. Firewalld rate-limiting is **stateless** — it slows attackers down by throttling connections rather than outright banning an IP after N failures. This means a patient attacker could still try indefinitely, just slowly (3 attempts per minute). Fail2ban would permanently ban after 5 failures. That said, for a machine on an internal IT network rather than raw public internet, this level of protection is perfectly reasonable. If IT ever updates the system to RHEL 9.5, you can revisit fail2ban at that point.
+A few things worth knowing about this approach compared to fail2ban. Firewalld rate-limiting is **stateless** — it slows attackers down by throttling connections rather than outright banning an IP after N failures. This means a patient attacker could still try indefinitely, just slowly (3 attempts per minute). Fail2ban would permanently ban after 5 failures.
 
 <br>
