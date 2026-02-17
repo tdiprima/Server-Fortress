@@ -1,4 +1,4 @@
-RHEL &mdash; Fail2ban wouldn't install.
+RHEL &mdash; `fail2ban` wouldn't install.
 
 On a system with a locked SELinux policy, firewalld rate-limiting is actually a clean, native solution with no extra packages needed. It works by dropping connections from any IP that exceeds a threshold, which stops brute-force SSH attempts just like fail2ban would.
 
