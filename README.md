@@ -2,6 +2,8 @@
 
 Interactive, "don't-lock-yourself-out" Linux server hardening script for **Ubuntu/Debian** and **RHEL/Rocky/Alma**.
 
+These tools are for me.  Others are welcome to use it, but use at your own risk.  Please read:
+
 ## What it does
 
 Runs a guided checklist that helps you quickly harden a fresh server:
