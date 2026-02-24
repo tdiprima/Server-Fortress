@@ -3,37 +3,23 @@
 # -----------------------------------------------------------------------------
 # BearFortify (No Firewall Edition)
 #
-# Interactive Linux server hardening script for Ubuntu/Debian and
-# RHEL/Rocky/Alma-based systems.
-#
-# What this script does:
-#   - Detects OS family and SSH service
-#   - Optionally updates system packages
-#   - Ensures an admin user exists and grants sudo/wheel access
-#   - Applies safer SSH configuration:
+# What this does:
+#   - Updates packages (optional)
+#   - Ensures an admin user exists + has sudo
+#   - Hardens SSH:
 #       • Disables root login
-#       • Limits auth attempts and login grace time
-#       • Optionally changes SSH port
-#       • Optionally restricts SSH to a specific user (AllowUsers)
-#       • Optionally disables password authentication (keys only)
-#   - Validates sshd_config before restarting SSH (auto-restores on failure)
-#   - Optionally enables automatic security updates
-#   - Optionally installs and enables Fail2ban (SSH brute-force protection)
-#   - Optionally installs Lynis for security auditing
+#       • Limits login attempts
+#       • Optional custom SSH port
+#       • Optional AllowUsers restriction
+#       • Optional disable password auth (keys only)
+#   - Validates SSH config before restart (prevents lockout)
+#   - Optional auto security updates
+#   - Optional Fail2ban + Lynis install
 #
-# Design goals:
-#   - Safe-by-default baseline hardening
-#   - Interactive prompts to prevent lockouts
-#   - Automatic config backups before changes
-#   - Minimal assumptions about environment
+# Supports: Ubuntu/Debian + RHEL/Rocky/Alma
+# Does NOT configure firewall.
 #
-# NOTE:
-#   This script does NOT configure host-based firewalls (ufw/firewalld).
-#   If changing the SSH port, ensure your cloud/security group allows it
-#   before disconnecting.
-#
-# Run as root:
-#   sudo bash bearfortify-no-firewall.sh
+# Run as root: sudo bash bearfortify-no-firewall.sh
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
