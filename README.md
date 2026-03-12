@@ -1,4 +1,6 @@
-# 🐻 BearFortify
+<!-- # Server Fortress -->
+
+![](Server-Fortress.png)
 
 Interactive, "don't-lock-yourself-out" Linux server hardening script for **Ubuntu/Debian** and **RHEL/Rocky/Alma**.
 
