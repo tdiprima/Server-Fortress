@@ -2,71 +2,60 @@
 
 ![](Server-Fortress.png)
 
-Interactive, "don't-lock-yourself-out" Linux server hardening script for **Ubuntu/Debian** and **RHEL/Rocky/Alma**.
+Hardening a new Linux server is tedious and error-prone — SSH config, firewall rules, auto-updates, brute-force protection. Easy to miss a step; easy to lock yourself out.
 
-These tools are for me.  Others are welcome to use it, but use at your own risk.  Please read:
+**BearFortify** is an interactive bash script that walks you through safe, step-by-step server hardening on Ubuntu/Debian and RHEL/Rocky/Alma. It backs up configs before touching them, validates SSH config before restarting, and prompts before every change.
 
-## What it does
+Covers:
 
-Runs a guided checklist that helps you quickly harden a fresh server:
+- SSH hardening (port, key-only auth, AllowUsers, PermitRootLogin)
+- Firewall setup (UFW or firewalld)
+- Automatic security updates
+- Fail2ban for SSH brute-force blocking
+- Lynis security audit tool
 
-- **Detects your distro family** (Debian-ish vs RHEL-ish)
-- **Optionally updates packages**
-- **Ensures an admin user exists** (creates it if missing) and **grants sudo**
-- **Hardens SSH** (safely)
-  - Disables **root login**
-  - Optionally changes **SSH port**
-  - Optionally enables **keys-only** (disables password auth)
-  - Optionally restricts logins via `AllowUsers`
-  - Sets sensible limits (MaxAuthTries, LoginGraceTime, etc.)
-  - **Backs up** `/etc/ssh/sshd_config` before changes
-  - **Validates** SSH config with `sshd -t` and restores backup if invalid
-- **Configures firewall**
-  - Debian: **UFW**
-  - RHEL: **firewalld**
-  - Opens SSH port (+ optional HTTP/HTTPS if you say it's a web server)
-- **Enables automatic security updates**
-  - Debian: `unattended-upgrades`
-  - RHEL: `dnf-automatic`
-- **Optional extras**
-  - **Fail2ban** (SSH brute-force protection)
-  - **Lynis** (security auditing tool)
+## Example Output
 
-## Why it's "safe-ish"
+```
+🐻 BearFortify — Safe Linux Server Hardening
+------------------------------------------------
+✅ Detected OS family: debian
+✅ Detected SSH service: ssh
 
-- Makes timestamped backups of SSH config
-- Tests SSH config before restarting SSH
-- Interactive prompts so you control what changes
+Step 1 — Choose your settings
+Admin username to ensure exists [bear]:
+SSH port [22]: 2222
+...
+✅ sshd_config validated OK
+✅ Restarted ssh
+✅ UFW enabled
+🎉 BearFortify complete
+```
+
+## Installation
+
+```bash
+git clone https://github.com/tdiprima/Server-Fortress.git
+cd Server-Fortress
+```
 
 ## Usage
 
 ```bash
-sudo bash bearfortify.sh
+sudo bash src/fortify.sh
 ```
 
-## After you run it (don't skip)
-
-In a **new terminal** (so you don't lose access if you changed things):
+For RHEL/Rocky/Alma:
 
 ```bash
-ssh -p <PORT> <USER>@<SERVER_IP>
+sudo bash src/fortify-rhel.sh
 ```
 
-Check what SSH is actually using:
+Use without firewall setup:
 
 ```bash
-sudo sshd -T | egrep 'port|permitrootlogin|passwordauthentication|allowusers'
+sudo bash src/fortify-no-firewall.sh
 ```
-
-## Notes / gotchas
-
-- If you change the SSH port, also update your **cloud firewall / security group**.
-- If you disable password auth, make sure you have **SSH keys working first**.
-
-## Supports
-
-- ✅ Ubuntu / Debian
-- ✅ RHEL / Rocky / Alma (and similar)
 
 ## ⚠️ Disclaimer
 
