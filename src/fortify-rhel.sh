@@ -17,7 +17,7 @@ err()   { echo -e "${COLOR_RED}❌ $*${COLOR_RESET}"; }
 
 title() {
   echo
-  echo -e "${COLOR_BOLD}🐻 Fortify-RHEL — RHEL 7 / RHEL 9 Server Hardening${COLOR_RESET}"
+  echo -e "${COLOR_BOLD}Fortify-RHEL — RHEL 7 / RHEL 9 Server Hardening${COLOR_RESET}"
   echo "--------------------------------------------------------"
 }
 
