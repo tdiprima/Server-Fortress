@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# set -euo pipefail
 
 # Fortify-RHEL — Harden RHEL 7.x and RHEL 9.x servers (interactive)
 # Supports: RHEL 7.9, RHEL 9.x (Rocky/Alma also work)
