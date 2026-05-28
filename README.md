@@ -57,7 +57,7 @@ Use without firewall setup:
 sudo bash src/fortify-no-firewall.sh
 ```
 
-## ⚠️ Disclaimer
+## ⚠ Disclaimer
 
 This script makes system-level security changes including SSH configuration, firewall rules, user accounts, and update settings. While it includes safeguards (backups, validation checks, and interactive prompts), **you are responsible for reviewing changes before applying them to any system**.
 

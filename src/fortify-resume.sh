@@ -12,7 +12,7 @@ COLOR_RED="\033[31m"
 COLOR_RESET="\033[0m"
 
 ok()   { echo -e "${COLOR_GREEN}✅ $*${COLOR_RESET}"; }
-warn() { echo -e "${COLOR_YELLOW}⚠️  $*${COLOR_RESET}"; }
+warn() { echo -e "${COLOR_YELLOW}⚠  $*${COLOR_RESET}"; }
 err()  { echo -e "${COLOR_RED}❌ $*${COLOR_RESET}"; }
 
 require_root() {
