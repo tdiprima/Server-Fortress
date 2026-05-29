@@ -1,0 +1,33 @@
+# Fortify configuration
+# Copy to fortify.conf and adjust for your environment.
+# Usage: sudo bash fortify.sh --config fortify.conf
+
+# Admin user to create/ensure (required)
+ADMIN_USER="deploy"
+
+# SSH port (required)
+SSH_PORT="22"
+
+# Open ports 80 and 443 for a web server (yes/no)
+WEB_SERVER="no"
+
+# Restrict SSH login to ADMIN_USER via AllowUsers (yes/no)
+SSH_ALLOW_USERS="yes"
+
+# Disable SSH password auth — keys only (yes/no)
+SSH_DISABLE_PASSWORD="yes"
+
+# Update all packages before hardening (yes/no)
+UPDATE_PACKAGES="yes"
+
+# Configure OS firewall: UFW on Debian, firewalld on RHEL (yes/no)
+CONFIGURE_FIREWALL="yes"
+
+# Enable automatic security updates (yes/no)
+ENABLE_AUTO_UPDATES="yes"
+
+# Install and enable Fail2ban for SSH brute-force protection (yes/no)
+INSTALL_FAIL2BAN="yes"
+
+# Install Lynis security audit tool (yes/no)
+INSTALL_LYNIS="yes"
