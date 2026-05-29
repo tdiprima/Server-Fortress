@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Fortify - Harden Linux servers (non-interactive, idempotent)
+# Fortify - Declarative Linux server hardening
 # Supports: Ubuntu/Debian + RHEL/Rocky/Alma
 # Author: tdiprima
 #
-# Usage: sudo bash fortify.sh --config fortify.conf
-#        sudo bash fortify.sh --config fortify.conf --dry-run
+# Usage:
+#   sudo bash fortify.sh --config fortify.conf              # apply
+#   sudo bash fortify.sh --config fortify.conf --dry-run    # preview
+#   sudo bash fortify.sh --config fortify.conf --drift      # detect drift
+#   sudo bash fortify.sh --rollback                         # revert last apply
 
+MODE="apply"
 CONFIG_FILE=""
 DRY_RUN="false"
 APT_UPDATED="false"
+
+STATE_DIR="/var/lib/fortify"
+STATE_FILE="${STATE_DIR}/state.conf"
+LAST_BACKUP_PATH=""
+SSHD_BACKUP_PATH=""
 
 # --- Output ---
 
@@ -18,30 +27,35 @@ COLOR_BOLD="\033[1m"
 COLOR_GREEN="\033[32m"
 COLOR_YELLOW="\033[33m"
 COLOR_RED="\033[31m"
+COLOR_CYAN="\033[36m"
 COLOR_RESET="\033[0m"
 
-ok()   { echo -e "${COLOR_GREEN}[OK]    $*${COLOR_RESET}"; }
-warn() { echo -e "${COLOR_YELLOW}[WARN]  $*${COLOR_RESET}"; }
-err()  { echo -e "${COLOR_RED}[ERROR] $*${COLOR_RESET}" >&2; }
-skip() { echo -e "[SKIP]  $*"; }
-dry()  { echo -e "${COLOR_YELLOW}[DRY]   $*${COLOR_RESET}"; }
+ok()    { echo -e "${COLOR_GREEN}[OK]    $*${COLOR_RESET}"; }
+warn()  { echo -e "${COLOR_YELLOW}[WARN]  $*${COLOR_RESET}"; }
+err()   { echo -e "${COLOR_RED}[ERROR] $*${COLOR_RESET}" >&2; }
+skip()  { echo -e "[SKIP]  $*"; }
+dry()   { echo -e "${COLOR_YELLOW}[DRY]   $*${COLOR_RESET}"; }
+drift() { echo -e "${COLOR_CYAN}[DRIFT] $*${COLOR_RESET}"; }
+rmv()   { echo -e "${COLOR_RED}[DEL]   $*${COLOR_RESET}"; }
 
 # --- Arguments ---
 
 usage() {
   cat <<'USAGE'
-Fortify - Non-interactive Linux server hardening
+Fortify - Declarative Linux server hardening
 
-Usage: sudo bash fortify.sh --config <path> [--dry-run]
+Usage:
+  sudo bash fortify.sh --config <path>              Apply configuration
+  sudo bash fortify.sh --config <path> --dry-run    Preview changes
+  sudo bash fortify.sh --config <path> --drift      Detect configuration drift
+  sudo bash fortify.sh --rollback                   Revert last apply
 
 Options:
-  --config <path>  Path to configuration file (required)
+  --config <path>  Path to configuration file
   --dry-run        Show what would change without applying
+  --drift          Compare live system state against config
+  --rollback       Undo the last fortify apply (uses state file)
   -h, --help       Show this help message
-
-Example:
-  sudo bash fortify.sh --config fortify.conf
-  sudo bash fortify.sh --config fortify.conf --dry-run
 USAGE
   exit 0
 }
@@ -58,6 +72,14 @@ parse_args() {
         DRY_RUN="true"
         shift
         ;;
+      --drift)
+        MODE="drift"
+        shift
+        ;;
+      --rollback)
+        MODE="rollback"
+        shift
+        ;;
       -h|--help)
         usage
         ;;
@@ -67,6 +89,38 @@ parse_args() {
         ;;
     esac
   done
+}
+
+# --- State management ---
+
+get_state_value() {
+  local key="$1"
+  if [[ -f "$STATE_FILE" ]]; then
+    grep -E "^${key}=" "$STATE_FILE" 2>/dev/null | tail -1 | cut -d'=' -f2- | tr -d '"' || true
+  fi
+}
+
+save_state() {
+  if [[ "$DRY_RUN" == "true" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$STATE_DIR"
+  cat >"$STATE_FILE" <<EOF
+# Fortify state — do not edit manually
+APPLIED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%Y-%m-%dT%H:%M:%SZ)"
+ADMIN_USER="${ADMIN_USER}"
+SSH_PORT="${SSH_PORT}"
+WEB_SERVER="${WEB_SERVER}"
+SSH_ALLOW_USERS="${SSH_ALLOW_USERS}"
+SSH_DISABLE_PASSWORD="${SSH_DISABLE_PASSWORD}"
+CONFIGURE_FIREWALL="${CONFIGURE_FIREWALL}"
+ENABLE_AUTO_UPDATES="${ENABLE_AUTO_UPDATES}"
+INSTALL_FAIL2BAN="${INSTALL_FAIL2BAN}"
+INSTALL_LYNIS="${INSTALL_LYNIS}"
+SSHD_BACKUP="${SSHD_BACKUP_PATH:-}"
+EOF
+  ok "State saved to ${STATE_FILE}"
 }
 
 # --- Config ---
@@ -122,7 +176,7 @@ validate_config() {
 }
 
 print_config() {
-  echo -e "${COLOR_BOLD}Fortify configuration:${COLOR_RESET}"
+  echo -e "${COLOR_BOLD}Configuration:${COLOR_RESET}"
   echo "  ADMIN_USER           = ${ADMIN_USER}"
   echo "  SSH_PORT             = ${SSH_PORT}"
   echo "  WEB_SERVER           = ${WEB_SERVER}"
@@ -165,7 +219,7 @@ detect_ssh_service() {
   fi
 }
 
-# --- Helpers ---
+# --- Package helpers ---
 
 pkg_install() {
   local pkgs=("$@")
@@ -178,8 +232,17 @@ pkg_install() {
   elif [[ "$OS_FAMILY" == "rhel" ]]; then
     dnf -y install "${pkgs[@]}" || yum -y install "${pkgs[@]}"
   else
-    err "Unsupported OS family for package install"
+    err "Unsupported OS family"
     exit 1
+  fi
+}
+
+pkg_remove() {
+  local pkgs=("$@")
+  if [[ "$OS_FAMILY" == "debian" ]]; then
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y "${pkgs[@]}" >/dev/null 2>&1 || true
+  elif [[ "$OS_FAMILY" == "rhel" ]]; then
+    dnf -y remove "${pkgs[@]}" >/dev/null 2>&1 || yum -y remove "${pkgs[@]}" >/dev/null 2>&1 || true
   fi
 }
 
@@ -188,15 +251,23 @@ service_enable_now() {
   systemctl enable --now "$svc" >/dev/null 2>&1 || true
 }
 
+service_stop_disable() {
+  local svc="$1"
+  systemctl stop "$svc" >/dev/null 2>&1 || true
+  systemctl disable "$svc" >/dev/null 2>&1 || true
+}
+
 backup_file() {
   local filepath="$1"
+  LAST_BACKUP_PATH=""
   if [[ -f "$filepath" ]]; then
-    cp -a "$filepath" "${filepath}.bak.$(date +%F_%H%M%S)"
+    LAST_BACKUP_PATH="${filepath}.bak.$(date +%F_%H%M%S)"
+    cp -a "$filepath" "$LAST_BACKUP_PATH"
     ok "Backed up ${filepath}"
   fi
 }
 
-# --- Hardening steps ---
+# --- Hardening: Packages ---
 
 update_packages() {
   if [[ "$UPDATE_PACKAGES" != "yes" ]]; then
@@ -218,6 +289,8 @@ update_packages() {
   fi
   ok "Packages updated"
 }
+
+# --- Hardening: User ---
 
 ensure_user() {
   local username="$1"
@@ -256,15 +329,18 @@ grant_sudo() {
   ok "Added '${username}' to ${group} group"
 }
 
+# --- Hardening: SSH ---
+
 harden_sshd() {
   local cfg="/etc/ssh/sshd_config"
 
   if [[ "$DRY_RUN" == "true" ]]; then
-    dry "Would harden ${cfg} (Port=${SSH_PORT}, PermitRootLogin=no, PasswordAuth=${SSH_DISABLE_PASSWORD})"
+    dry "Would harden ${cfg} (Port=${SSH_PORT}, PermitRootLogin=no)"
     return 0
   fi
 
   backup_file "$cfg"
+  SSHD_BACKUP_PATH="$LAST_BACKUP_PATH"
   touch "$cfg"
 
   # Set or replace an sshd_config directive
@@ -298,11 +374,9 @@ harden_sshd() {
     ok "sshd_config validated"
   else
     err "sshd_config failed validation — restoring backup"
-    local lastbak
-    lastbak="$(ls -1t /etc/ssh/sshd_config.bak.* 2>/dev/null | head -n1 || true)"
-    if [[ -n "$lastbak" ]]; then
-      cp -a "$lastbak" "$cfg"
-      warn "Restored from ${lastbak}"
+    if [[ -n "$SSHD_BACKUP_PATH" && -f "$SSHD_BACKUP_PATH" ]]; then
+      cp -a "$SSHD_BACKUP_PATH" "$cfg"
+      warn "Restored from ${SSHD_BACKUP_PATH}"
     fi
     exit 1
   fi
@@ -311,30 +385,66 @@ harden_sshd() {
   ok "SSH hardened and restarted"
 }
 
-configure_firewall() {
-  if [[ "$CONFIGURE_FIREWALL" != "yes" ]]; then
-    skip "Firewall (CONFIGURE_FIREWALL=no)"
-    return 0
-  fi
-  if [[ "$DRY_RUN" == "true" ]]; then
-    dry "Would configure firewall (SSH=${SSH_PORT}, HTTP/HTTPS=${WEB_SERVER})"
-    return 0
-  fi
+# --- Hardening: Firewall ---
+
+remove_fortify_firewall_rules() {
+  local prev_port="$1"
+  local prev_web="$2"
 
   if [[ "$OS_FAMILY" == "debian" ]]; then
-    configure_firewall_ufw
+    if [[ -n "$prev_port" ]]; then
+      ufw delete allow "${prev_port}/tcp" >/dev/null 2>&1 || true
+    fi
+    if [[ "$prev_web" == "yes" ]]; then
+      ufw delete allow 80/tcp >/dev/null 2>&1 || true
+      ufw delete allow 443/tcp >/dev/null 2>&1 || true
+    fi
   else
-    configure_firewall_firewalld
+    if [[ -n "$prev_port" ]]; then
+      firewall-cmd --permanent --remove-port="${prev_port}/tcp" >/dev/null 2>&1 || true
+    fi
+    if [[ "$prev_web" == "yes" ]]; then
+      firewall-cmd --permanent --remove-service=http >/dev/null 2>&1 || true
+      firewall-cmd --permanent --remove-service=https >/dev/null 2>&1 || true
+    fi
+    firewall-cmd --reload >/dev/null 2>&1 || true
   fi
 }
 
-configure_firewall_ufw() {
+cleanup_stale_firewall_rules() {
+  local prev_port="$1"
+  local prev_web="$2"
+
+  # SSH port changed — remove old rule
+  if [[ -n "$prev_port" && "$prev_port" != "$SSH_PORT" ]]; then
+    if [[ "$OS_FAMILY" == "debian" ]]; then
+      ufw delete allow "${prev_port}/tcp" >/dev/null 2>&1 || true
+    else
+      firewall-cmd --permanent --remove-port="${prev_port}/tcp" >/dev/null 2>&1 || true
+    fi
+    rmv "Removed stale SSH rule for port ${prev_port}"
+  fi
+
+  # Web server disabled — remove HTTP/HTTPS rules
+  if [[ "$prev_web" == "yes" && "$WEB_SERVER" != "yes" ]]; then
+    if [[ "$OS_FAMILY" == "debian" ]]; then
+      ufw delete allow 80/tcp >/dev/null 2>&1 || true
+      ufw delete allow 443/tcp >/dev/null 2>&1 || true
+    else
+      firewall-cmd --permanent --remove-service=http >/dev/null 2>&1 || true
+      firewall-cmd --permanent --remove-service=https >/dev/null 2>&1 || true
+    fi
+    rmv "Removed stale HTTP/HTTPS rules"
+  fi
+}
+
+apply_firewall_ufw() {
   pkg_install ufw
 
   ufw default deny incoming >/dev/null 2>&1
   ufw default allow outgoing >/dev/null 2>&1
-
   ufw allow "${SSH_PORT}/tcp" >/dev/null 2>&1
+
   if [[ "$WEB_SERVER" == "yes" ]]; then
     ufw allow 80/tcp >/dev/null 2>&1
     ufw allow 443/tcp >/dev/null 2>&1
@@ -342,10 +452,9 @@ configure_firewall_ufw() {
 
   ufw --force enable >/dev/null 2>&1
   ok "UFW configured"
-  ufw status verbose || true
 }
 
-configure_firewall_firewalld() {
+apply_firewall_firewalld() {
   pkg_install firewalld
   service_enable_now firewalld
 
@@ -357,53 +466,99 @@ configure_firewall_firewalld() {
 
   firewall-cmd --reload >/dev/null 2>&1
   ok "Firewalld configured"
-  firewall-cmd --list-all || true
 }
 
-enable_auto_updates() {
-  if [[ "$ENABLE_AUTO_UPDATES" != "yes" ]]; then
-    skip "Auto updates (ENABLE_AUTO_UPDATES=no)"
-    return 0
-  fi
-  if [[ "$DRY_RUN" == "true" ]]; then
-    dry "Would enable automatic security updates"
-    return 0
-  fi
+ensure_firewall() {
+  local prev_configured prev_web prev_port
+  prev_configured="$(get_state_value CONFIGURE_FIREWALL)"
+  prev_web="$(get_state_value WEB_SERVER)"
+  prev_port="$(get_state_value SSH_PORT)"
 
-  if [[ "$OS_FAMILY" == "debian" ]]; then
-    pkg_install unattended-upgrades
-    dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1 || true
-    ok "Auto security updates enabled (unattended-upgrades)"
-  elif [[ "$OS_FAMILY" == "rhel" ]]; then
-    pkg_install dnf-automatic
-    service_enable_now dnf-automatic.timer
-    ok "Auto security updates enabled (dnf-automatic)"
-  fi
-}
-
-install_fail2ban() {
-  if [[ "$INSTALL_FAIL2BAN" != "yes" ]]; then
-    skip "Fail2ban (INSTALL_FAIL2BAN=no)"
-    return 0
-  fi
-  if [[ "$DRY_RUN" == "true" ]]; then
-    dry "Would install and configure Fail2ban"
-    return 0
-  fi
-
-  if [[ "$OS_FAMILY" == "debian" ]]; then
-    pkg_install fail2ban
+  if [[ "$CONFIGURE_FIREWALL" == "yes" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+      dry "Would configure firewall (SSH=${SSH_PORT}, HTTP/HTTPS=${WEB_SERVER})"
+      return 0
+    fi
+    cleanup_stale_firewall_rules "$prev_port" "$prev_web"
+    if [[ "$OS_FAMILY" == "debian" ]]; then
+      apply_firewall_ufw
+    else
+      apply_firewall_firewalld
+    fi
+  elif [[ "$prev_configured" == "yes" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+      dry "Would remove fortify-managed firewall rules"
+      return 0
+    fi
+    remove_fortify_firewall_rules "$prev_port" "$prev_web"
+    rmv "Removed fortify-managed firewall rules"
   else
-    pkg_install epel-release || true
-    pkg_install fail2ban
+    skip "Firewall (CONFIGURE_FIREWALL=no)"
   fi
+}
 
-  mkdir -p /etc/fail2ban
-  if [[ -f /etc/fail2ban/jail.conf && ! -f /etc/fail2ban/jail.local ]]; then
-    cp -a /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+# --- Hardening: Auto updates ---
+
+ensure_auto_updates() {
+  local prev_enabled
+  prev_enabled="$(get_state_value ENABLE_AUTO_UPDATES)"
+
+  if [[ "$ENABLE_AUTO_UPDATES" == "yes" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+      dry "Would enable automatic security updates"
+      return 0
+    fi
+    if [[ "$OS_FAMILY" == "debian" ]]; then
+      pkg_install unattended-upgrades
+      dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1 || true
+      ok "Auto updates enabled (unattended-upgrades)"
+    elif [[ "$OS_FAMILY" == "rhel" ]]; then
+      pkg_install dnf-automatic
+      service_enable_now dnf-automatic.timer
+      ok "Auto updates enabled (dnf-automatic)"
+    fi
+  elif [[ "$prev_enabled" == "yes" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+      dry "Would disable automatic security updates"
+      return 0
+    fi
+    if [[ "$OS_FAMILY" == "debian" ]]; then
+      service_stop_disable unattended-upgrades
+      pkg_remove unattended-upgrades
+      rmv "Auto updates removed (unattended-upgrades)"
+    elif [[ "$OS_FAMILY" == "rhel" ]]; then
+      service_stop_disable dnf-automatic.timer
+      rmv "Auto updates disabled (dnf-automatic.timer)"
+    fi
+  else
+    skip "Auto updates (ENABLE_AUTO_UPDATES=no)"
   fi
+}
 
-  cat >/etc/fail2ban/jail.d/fortify.local <<'EOF'
+# --- Hardening: Fail2ban ---
+
+ensure_fail2ban() {
+  local prev_installed
+  prev_installed="$(get_state_value INSTALL_FAIL2BAN)"
+
+  if [[ "$INSTALL_FAIL2BAN" == "yes" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+      dry "Would install and configure Fail2ban"
+      return 0
+    fi
+    if [[ "$OS_FAMILY" == "debian" ]]; then
+      pkg_install fail2ban
+    else
+      pkg_install epel-release || true
+      pkg_install fail2ban
+    fi
+
+    mkdir -p /etc/fail2ban
+    if [[ -f /etc/fail2ban/jail.conf && ! -f /etc/fail2ban/jail.local ]]; then
+      cp -a /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+    fi
+
+    cat >/etc/fail2ban/jail.d/fortify.local <<'EOF'
 [sshd]
 enabled = true
 findtime = 10m
@@ -411,28 +566,256 @@ maxretry = 5
 bantime = 1h
 EOF
 
-  service_enable_now fail2ban
-  ok "Fail2ban configured and enabled"
-}
-
-install_lynis() {
-  if [[ "$INSTALL_LYNIS" != "yes" ]]; then
-    skip "Lynis (INSTALL_LYNIS=no)"
-    return 0
-  fi
-  if [[ "$DRY_RUN" == "true" ]]; then
-    dry "Would install Lynis"
-    return 0
-  fi
-
-  if [[ "$OS_FAMILY" == "debian" ]]; then
-    pkg_install lynis
+    service_enable_now fail2ban
+    ok "Fail2ban configured and enabled"
+  elif [[ "$prev_installed" == "yes" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+      dry "Would remove Fail2ban"
+      return 0
+    fi
+    service_stop_disable fail2ban
+    rm -f /etc/fail2ban/jail.d/fortify.local
+    pkg_remove fail2ban
+    rmv "Fail2ban removed"
   else
-    pkg_install epel-release || true
-    pkg_install lynis
+    skip "Fail2ban (INSTALL_FAIL2BAN=no)"
   fi
-  ok "Lynis installed"
 }
+
+# --- Hardening: Lynis ---
+
+ensure_lynis() {
+  local prev_installed
+  prev_installed="$(get_state_value INSTALL_LYNIS)"
+
+  if [[ "$INSTALL_LYNIS" == "yes" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+      dry "Would install Lynis"
+      return 0
+    fi
+    if [[ "$OS_FAMILY" == "debian" ]]; then
+      pkg_install lynis
+    else
+      pkg_install epel-release || true
+      pkg_install lynis
+    fi
+    ok "Lynis installed"
+  elif [[ "$prev_installed" == "yes" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+      dry "Would remove Lynis"
+      return 0
+    fi
+    pkg_remove lynis
+    rmv "Lynis removed"
+  else
+    skip "Lynis (INSTALL_LYNIS=no)"
+  fi
+}
+
+# --- Drift detection ---
+
+check_drift() {
+  local has_drift="false"
+
+  echo -e "${COLOR_BOLD}Drift detection:${COLOR_RESET}"
+  echo
+
+  # SSH port
+  local live_port
+  live_port="$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' || echo "unknown")"
+  if [[ "$live_port" != "$SSH_PORT" ]]; then
+    drift "SSH port: config=${SSH_PORT} live=${live_port}"
+    has_drift="true"
+  else
+    ok "SSH port: ${SSH_PORT}"
+  fi
+
+  # PermitRootLogin
+  local live_val
+  live_val="$(sshd -T 2>/dev/null | grep -i '^permitrootlogin ' | awk '{print $2}' || echo "unknown")"
+  if [[ "$live_val" != "no" ]]; then
+    drift "PermitRootLogin: config=no live=${live_val}"
+    has_drift="true"
+  else
+    ok "PermitRootLogin: no"
+  fi
+
+  # PasswordAuthentication
+  if [[ "$SSH_DISABLE_PASSWORD" == "yes" ]]; then
+    live_val="$(sshd -T 2>/dev/null | grep -i '^passwordauthentication ' | awk '{print $2}' || echo "unknown")"
+    if [[ "$live_val" != "no" ]]; then
+      drift "PasswordAuthentication: config=no live=${live_val}"
+      has_drift="true"
+    else
+      ok "PasswordAuthentication: no"
+    fi
+  fi
+
+  # User exists
+  if id "$ADMIN_USER" >/dev/null 2>&1; then
+    ok "User '${ADMIN_USER}' exists"
+  else
+    drift "User '${ADMIN_USER}' does not exist"
+    has_drift="true"
+  fi
+
+  # Sudo group
+  local sudo_group
+  if [[ "$OS_FAMILY" == "debian" ]]; then
+    sudo_group="sudo"
+  else
+    sudo_group="wheel"
+  fi
+  if id "$ADMIN_USER" >/dev/null 2>&1 && id -nG "$ADMIN_USER" 2>/dev/null | grep -qw "$sudo_group"; then
+    ok "User '${ADMIN_USER}' in ${sudo_group} group"
+  else
+    drift "User '${ADMIN_USER}' not in ${sudo_group} group"
+    has_drift="true"
+  fi
+
+  # Firewall
+  if [[ "$CONFIGURE_FIREWALL" == "yes" ]]; then
+    if [[ "$OS_FAMILY" == "debian" ]]; then
+      if ufw status 2>/dev/null | grep -q "Status: active"; then
+        ok "UFW active"
+      else
+        drift "UFW not active"
+        has_drift="true"
+      fi
+    else
+      if systemctl is-active firewalld >/dev/null 2>&1; then
+        ok "Firewalld active"
+      else
+        drift "Firewalld not active"
+        has_drift="true"
+      fi
+    fi
+  fi
+
+  # Fail2ban
+  if [[ "$INSTALL_FAIL2BAN" == "yes" ]]; then
+    if systemctl is-active fail2ban >/dev/null 2>&1; then
+      ok "Fail2ban active"
+    else
+      drift "Fail2ban not active"
+      has_drift="true"
+    fi
+  fi
+
+  # Auto updates
+  if [[ "$ENABLE_AUTO_UPDATES" == "yes" ]]; then
+    if [[ "$OS_FAMILY" == "debian" ]]; then
+      if dpkg -l unattended-upgrades 2>/dev/null | grep -q '^ii'; then
+        ok "Auto updates installed"
+      else
+        drift "Auto updates (unattended-upgrades) not installed"
+        has_drift="true"
+      fi
+    elif [[ "$OS_FAMILY" == "rhel" ]]; then
+      if systemctl is-enabled dnf-automatic.timer >/dev/null 2>&1; then
+        ok "Auto updates enabled"
+      else
+        drift "Auto updates (dnf-automatic) not enabled"
+        has_drift="true"
+      fi
+    fi
+  fi
+
+  # Lynis
+  if [[ "$INSTALL_LYNIS" == "yes" ]]; then
+    if command -v lynis >/dev/null 2>&1; then
+      ok "Lynis installed"
+    else
+      drift "Lynis not installed"
+      has_drift="true"
+    fi
+  fi
+
+  echo
+  if [[ "$has_drift" == "true" ]]; then
+    warn "Drift detected — run without --drift to converge"
+    return 1
+  fi
+  ok "No drift — system matches config"
+  return 0
+}
+
+# --- Rollback ---
+
+do_rollback() {
+  if [[ ! -f "$STATE_FILE" ]]; then
+    err "No state file at ${STATE_FILE} — nothing to roll back"
+    exit 1
+  fi
+
+  # Load all values before making changes
+  local prev_user prev_port prev_web prev_fw prev_f2b prev_auto prev_lynis sshd_backup
+  prev_user="$(get_state_value ADMIN_USER)"
+  prev_port="$(get_state_value SSH_PORT)"
+  prev_web="$(get_state_value WEB_SERVER)"
+  prev_fw="$(get_state_value CONFIGURE_FIREWALL)"
+  prev_f2b="$(get_state_value INSTALL_FAIL2BAN)"
+  prev_auto="$(get_state_value ENABLE_AUTO_UPDATES)"
+  prev_lynis="$(get_state_value INSTALL_LYNIS)"
+  sshd_backup="$(get_state_value SSHD_BACKUP)"
+
+  echo -e "${COLOR_BOLD}Rolling back last fortify apply:${COLOR_RESET}"
+  echo
+
+  # Restore sshd_config
+  if [[ -n "$sshd_backup" && -f "$sshd_backup" ]]; then
+    cp -a "$sshd_backup" /etc/ssh/sshd_config
+    if sshd -t >/dev/null 2>&1; then
+      systemctl restart "$SSH_SVC"
+      ok "Restored sshd_config from ${sshd_backup}"
+    else
+      warn "Restored sshd_config but validation failed — manual review needed"
+    fi
+  else
+    warn "No sshd_config backup found — skipping SSH rollback"
+  fi
+
+  # Remove firewall rules
+  if [[ "$prev_fw" == "yes" ]]; then
+    remove_fortify_firewall_rules "$prev_port" "$prev_web"
+    rmv "Removed fortify firewall rules"
+  fi
+
+  # Remove fail2ban
+  if [[ "$prev_f2b" == "yes" ]]; then
+    service_stop_disable fail2ban
+    rm -f /etc/fail2ban/jail.d/fortify.local
+    pkg_remove fail2ban
+    rmv "Fail2ban removed"
+  fi
+
+  # Disable auto updates
+  if [[ "$prev_auto" == "yes" ]]; then
+    if [[ "$OS_FAMILY" == "debian" ]]; then
+      service_stop_disable unattended-upgrades
+      pkg_remove unattended-upgrades
+    elif [[ "$OS_FAMILY" == "rhel" ]]; then
+      service_stop_disable dnf-automatic.timer
+    fi
+    rmv "Auto updates disabled"
+  fi
+
+  # Remove lynis
+  if [[ "$prev_lynis" == "yes" ]]; then
+    pkg_remove lynis
+    rmv "Lynis removed"
+  fi
+
+  # Clean up state
+  rm -f "$STATE_FILE"
+  ok "State file removed"
+
+  echo
+  warn "Rollback complete. User '${prev_user}' was NOT removed — do this manually if needed."
+  warn "Verify SSH access in a new terminal before closing this session."
+}
+
+# --- Summary ---
 
 print_summary() {
   echo
@@ -453,6 +836,24 @@ print_summary() {
 
 main() {
   parse_args "$@"
+
+  # Rollback uses state file, not config
+  if [[ "$MODE" == "rollback" ]]; then
+    if [[ "${EUID}" -ne 0 ]]; then
+      err "Run as root: sudo bash $0 --rollback"
+      exit 1
+    fi
+    detect_os
+    if [[ "$OS_FAMILY" == "unknown" ]]; then
+      err "Unsupported distro"
+      exit 1
+    fi
+    detect_ssh_service
+    do_rollback
+    return 0
+  fi
+
+  # All other modes require a config file
   load_config
   validate_config
 
@@ -466,13 +867,20 @@ main() {
     err "Unsupported distro. Fortify supports Ubuntu/Debian and RHEL/Rocky/Alma."
     exit 1
   fi
-
   detect_ssh_service
 
-  ok "OS family: ${OS_FAMILY} | SSH service: ${SSH_SVC}"
+  ok "OS: ${OS_FAMILY} | SSH: ${SSH_SVC}"
   print_config
   echo
 
+  # Drift detection mode
+  if [[ "$MODE" == "drift" ]]; then
+    local rc=0
+    check_drift || rc=$?
+    exit "$rc"
+  fi
+
+  # Apply mode
   if [[ "$DRY_RUN" == "true" ]]; then
     warn "Dry-run mode — no changes will be applied"
     echo
@@ -482,10 +890,11 @@ main() {
   ensure_user "$ADMIN_USER"
   grant_sudo "$ADMIN_USER"
   harden_sshd
-  configure_firewall
-  enable_auto_updates
-  install_fail2ban
-  install_lynis
+  ensure_firewall
+  ensure_auto_updates
+  ensure_fail2ban
+  ensure_lynis
+  save_state
 
   if [[ "$DRY_RUN" != "true" ]]; then
     print_summary
